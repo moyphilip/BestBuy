@@ -19,9 +19,11 @@ from sklearn import cross_validation
 from sklearn.metrics import classification_report
 import numpy as np
 from sklearn.metrics import accuracy_score
+import textblob as TextBlob
+from sklearn.utils import resample
 
 os.getcwd()
-os.chdir('C:\Users\Philip\Desktop\Data Science\Best Buy')
+os.chdir('C:\Users\Philip\Desktop\Data Science\BestBuy')
 
 api_key = "jbehujrrpbmtx9gzahqbb4aq"
 
@@ -62,6 +64,7 @@ for page in range(sku_total_pages):
     sku = r.read()
     sku = json.loads(sku)
     sku_products = sku['products']
+    time.sleep(1)
     for i in sku_products: 
         a.append(dict.values(i))
         
@@ -109,12 +112,12 @@ for i, row in sku_numbers.iterrows():
         c.close()
 b = sum(b,[])
 reviews_df = pd.DataFrame(b) 
-#reviews_df.to_pickle('reviews_df')
+reviews_df.to_pickle('reviews_df')
 #reviews_df = pd.read_pickle('reviews_df')
 
 #add new column class based on rating function ( i used rating == 1 and 2 because 1 does not have enough reviews)
 def setClass(df):
-    if df['rating'] == 5:
+    if df['rating'] == 5 or df['rating'] == 4:
         return "positive"
     elif df['rating'] == 1 or df['rating'] == 2:
         return "negative"
@@ -123,75 +126,99 @@ def setClass(df):
 
 reviews_df['class'] = reviews_df.apply(setClass, axis = 1)
 
-#replace puncs with spaces and list each word, need to replace numbers and words with numbers
-reviews_df['comment'] = reviews_df['comment'].str.replace('[^\w\s]',' ')
-reviews_df['comment'] = reviews_df['comment'].apply(lambda x : re.sub(r'\w*\d\w*', '', x).strip())
+#reviews_df.to_pickle('reviews_df_spell')
+reviews_df_spell = pd.read_pickle('reviews_df_spell')
 #reviews_df.to_pickle('reviews_df')   
 reviews_df = pd.read_pickle('reviews_df')
 
-#spell check
-from textblob import TextBlob
+#exploratory analysis
+reviews_df.groupby('rating').size()
+#rating
+#1          1066
+#2           842
+#3          2824
+#4         21199
+#5         50792
+reviews_df.groupby('class').size()
+#class
+#             2824
+#negative     1908
+#positive    71991
 
-#scikit try
-reviews_pn = reviews_df[reviews_df['class'].isin(['positive','negative'])]
-comments = list(reviews_pn['comment'].values)
-classes = list(reviews_pn['class'].values)
-class_names = ['negative','positive']
-
-# preprocess creates the term frequency matrix for the review data set
-stop = stopwords.words('english')
-count_vectorizer = CountVectorizer(analyzer =u'word',stop_words = stop, ngram_range=(1, 3))
-comments = count_vectorizer.fit_transform(comments)
-tfidf_comments = TfidfTransformer(use_idf=True).fit_transform(comments)
+#undersample dataset
+num_negative = sum(reviews_df['class'] == 'negative')
+positive_sample_indx = list(resample(reviews_df[reviews_df['class']=='positive'].index.tolist(), n_samples = int(num_negative), random_state = 0))
+positive_sample = reviews_df.loc[positive_sample_indx,:]
+negative_sample = reviews_df[reviews_df['class'] == 'negative']
+undersample = positive_sample.append(negative_sample)
 
 
-# preparing data for split validation. 60% training, 40% test
-data_train,data_test,target_train,target_test = cross_validation.train_test_split(tfidf_comments,classes,test_size=0.4,random_state=43)
-classifier = BernoulliNB().fit(data_train,target_train)
-predicted = classifier.predict(data_test)
+#replace puncs with spaces and list each word, removed numbers and words with numbers, spell check with textblob
+def preprocess(df,column):
+    #df[column] = df[column].apply(lambda x: str(TextBlob.TextBlob(x).correct()))
+    #df[column] = df[column].apply(lambda x : re.sub('\W',' ',x).strip())
+    #df[column] = df[column].apply(lambda x : re.sub(r'\w*\d\w*', '', x).strip())
+    df[column] = df[column].apply(lambda x : re.sub('\d',' ',x).strip())
+
+#scikit
+def naive_bayes(df,column):
+    reviews_pn = df[df['class'].isin(['positive','negative'])]
+    comments = list(reviews_pn[column].values)
+    classes = list(reviews_pn['class'].values)
     
-print classification_report(target_test,predicted)
-print "The accuracy score is {:.2%}".format(accuracy_score(target_test,predicted))
+    # preprocess creates the term frequency matrix for the review data set
+    stop = stopwords.words('english')
+    count_vectorizer = CountVectorizer(stop_words = stop, ngram_range=(1,3))
+    comments1 = count_vectorizer.fit_transform(comments)
+    tfidf_comments = TfidfTransformer(use_idf=True).fit_transform(comments1)
+    
+    # preparing data for split validation. 60% training, 40% test
+    data_train,data_test,target_train,target_test = cross_validation.train_test_split(tfidf_comments,classes,test_size=0.4,random_state=43)
+    classifier = BernoulliNB().fit(data_train,target_train)
+    predicted = classifier.predict(data_test)
+    
+    print classification_report(target_test,predicted)
+    print "The accuracy score is {:.2%}".format(accuracy_score(target_test,predicted))
+    
+    most_informative_feature_for_binary_classification(count_vectorizer,classifier,n=20)
+    
+    #predict on unknown
+    reviews_nc = reviews_df[reviews_df['class'] == '']
+    comments_nc = list(reviews_nc[column].values)
+    comments_nc1 = count_vectorizer.transform(comments_nc)    
+    tfidf_comments_nc = TfidfTransformer(use_idf=True).fit_transform(comments_nc1)    
+    new_predicted = classifier.predict(tfidf_comments_nc)
+    
+    print "negative = %s" %sum(new_predicted == 'negative')
+    print "positive = %s" %sum(new_predicted == 'positive')
+    
 
-#top 10 features
-def print_top10(vectorizer, clf, class_labels):
-    """Prints features with the highest coefficient values, per class"""
+#top features
+def most_informative_feature_for_binary_classification(vectorizer, classifier, n=10):
+    class_labels = classifier.classes_
     feature_names = vectorizer.get_feature_names()
-    for i, class_label in enumerate(class_labels):
-        top10 = np.argsort(clf.coef_[0])[:20]
-        print("%s: %s" % (class_label,
-              " ".join(feature_names[j] for j in top10)))
+    topn_class1 = sorted(zip(classifier.coef_[0], feature_names))[:n]
+    topn_class2 = sorted(zip(classifier.coef_[0], feature_names))[-n:]
 
-def show_most_informative_features(vectorizer, clf, n=20):
-    feature_names = vectorizer.get_feature_names()
-    coefs_with_fns = sorted(zip(clf.coef_[0], feature_names))
-    top = zip(coefs_with_fns[:n], coefs_with_fns[:-(n + 1):-1])
-    for (coef_1, fn_1), (coef_2, fn_2) in top:
-        print "\t%.4f\t%-15s\t\t%.4f\t%-15s" % (coef_1, fn_1, coef_2, fn_2)
+    for coef, feat in topn_class1:
+        print class_labels[0], coef, feat
 
+    print
 
-
+    for coef, feat in reversed(topn_class2):
+        print class_labels[1], coef, feat
+        
+#final output
 
 
-#first try
-reviews_positive = reviews_df[reviews_df['class'] == 'positive']
-reviews_negative = reviews_df[reviews_df['class'] == 'negative']
+def main(df, column):
+    preprocess(df,column)
+    naive_bayes(df,column)
 
-#reviews split by word
-reviews_positive['comment']= reviews_positive['comment'].str.lower().str.split()
-reviews_negative['comment'] = reviews_negative['comment'].str.lower().str.split()
-
-#remove stop words from comment
-from nltk.corpus import stopwords
-stop = stopwords.words('english')
-reviews_positive['comment'] = reviews_positive['comment'].apply(lambda x: [item for item in x if item not in stop])
-reviews_negative['comment'] = reviews_negative['comment'].apply(lambda x : [item for item in x if item not in stop])
-
-#reviews_positive.to_pickle('reviews_positive')
-#reviews_negative.to_pickle('reviews_negative')
-
-#reviews_positive = pd.read_pickle('reviews_positive')
-#reviews_negative = pd.read_pickle('reviews_negative')
+main(undersample,'title')
+main(undersample, 'comment')
 
 
-[reviews_positive['comment']
+
+
+
