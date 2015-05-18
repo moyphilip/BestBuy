@@ -215,8 +215,9 @@ def main(df, column):
     preprocess(df,column)
     naive_bayes(df,column)
 
-main(undersample,'title')
 main(undersample, 'comment')
+main(undersample,'title')
+
 
 
 
